@@ -21,7 +21,17 @@
  * IN THE SOFTWARE.
  */
 
+#ifdef __GNUC__
+/* This silences GCC's -Wformat. Clang needs a 'pragma clang diagnostic' to do this. */
+#  pragma GCC system_header
+#endif
+
 /* Here Be Dragons! */
+
+#undef __format_ok
+#undef __format_ok_value
+#undef __if_complex_is_supported
+#undef __is_char_literal
 
 #undef __format
 #undef __print_arg
@@ -85,8 +95,22 @@
  * function, for quick debugging.
  */
 #if !defined(_STDIO_H_) && !defined(_STDIO_H)
-int printf(const char *restrict format, ...);
+int printf(const char *restrict format, ...)
+#ifdef __GNUC__
+__attribute__((__format__(printf, 1, 2)))
 #endif
+;
+#endif
+
+#ifdef __TINYC__
+/* tcc lacks _Complex, so we disable it */
+#  define __if_complex_is_supported(...)
+#else
+#  define __if_complex_is_supported(...) __VA_ARGS__
+#endif
+
+/* This is a super hacky trick that tries to figure out whether an int is a char or not. */
+#define __is_char_literal(x) (sizeof(#x) >= 4 && ((#x)[0] == '\'' || (#x)[sizeof(#x) - 2] == '\''))
 
 /* C11 added the _Generic construct, which is similar to a switch on an
  * expression's type. We use it to select the correct format string for printf.
@@ -112,7 +136,7 @@ int printf(const char *restrict format, ...);
              unsigned char: "%hhu", \
               signed short: "%hd", \
             unsigned short: "%hu", \
-                signed int: "%d", \
+                signed int: (__is_char_literal(arg) ? "%c" : "%d"), \
               unsigned int: "%u", \
                   long int: "%ld", \
          unsigned long int: "%lu", \
@@ -122,15 +146,73 @@ int printf(const char *restrict format, ...);
                      float: "%g", \
                     double: "%g", \
                long double: "%Lg", \
-           _Complex double: "%g + %gi", \
+ __if_complex_is_supported(_Complex double: "%g + %gi",) \
                     char *: "%s", \
+              const char *: "%s", /* yes, you need both */ \
                     void *: "%p", \
+              const void *: "%p", \
          char[sizeof(arg)]: "%s", \
+   const char[sizeof(arg)]: "%s",  \
                    default: "<unknown>" \
 )
 
+#define __format_ok_value(arg) _Generic((arg), \
+                      char: 1, \
+               signed char: 1, \
+             unsigned char: 1, \
+              signed short: 1, \
+            unsigned short: 1, \
+                signed int: 1, \
+              unsigned int: 1, \
+                  long int: 1, \
+         unsigned long int: 1, \
+             long long int: 1, \
+    unsigned long long int: 1, \
+                     _Bool: 1, \
+                     float: 1, \
+                    double: 1, \
+               long double: 1, \
+ __if_complex_is_supported(_Complex double: 1,) \
+                    char *: 1, \
+              const char *: 1, /* yes, you need both */ \
+                    void *: 1, \
+              const void *: 1, \
+         char[sizeof(arg)]: 1, \
+   const char[sizeof(arg)]: 1,  \
+                   default: 0 \
+)
+
+/* This will check if the arguments are of compatible types using a
+ * static assertion. We only do it on GCC, clang, and tcc because it has statement
+ * expressions. */
+#ifdef __TINYC__
+/* tcc doesn't have _Static_assert, so we do it the old fashion way */
+#   define __format_ok(arg) enum { unknown_argument_type = 1 / (__format_ok_value(arg)) }
+#else
+#   define __format_ok(arg) _Static_assert(__format_ok_value(arg), "Unknown argument type!")
+#endif
+
 /* Print an argument regardless of its type (see __format). */
+#ifdef __clang__
+/* This silences Clang's -Wformat. Unfortunately, GCC needs the system_header as it doesn't
+ * allow any pragmas in its macros. */
+#define __print_arg(arg) \
+    __extension__ ({ \
+        _Pragma("clang diagnostic push") \
+        _Pragma("clang diagnostic ignored \"-Wformat\"") \
+        __format_ok(arg); \
+        printf(__format(arg), arg); \
+        _Pragma("clang diagnostic pop") \
+    })
+#elif defined(__GNUC__) || defined(__TINYC__)
+#define __print_arg(arg) \
+    __extension__ ({ \
+        __format_ok(arg); \
+        printf(__format(arg), arg); \
+    })
+#else
 #define __print_arg(arg) printf(__format(arg), arg)
+#endif
 
 /* __nargs_0 calls __nargs_1 with all the arguments, plus 15 twos and 1 one at
  * the end (the zero is there just to avoid a warning when __nargs_1 has an
@@ -202,7 +284,7 @@ int printf(const char *restrict format, ...);
 #define __debug_raw_P_2(arg) __debug_raw_P_1(arg), printf(" ")
 
 #define debug_raw(...) __custom_debug(__debug_raw_P_, __VA_ARGS__)
-#define idebug_raw(...) __custom_idebug(__debug_raw_P_, " ", __VA_ARGS__)
+#define idebug_raw(...)  __custom_idebug(__debug_raw_P_, " ", __VA_ARGS__)
 
 #endif /* NDEBUG */
 
